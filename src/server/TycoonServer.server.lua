@@ -457,18 +457,22 @@ local function onPlayerAdded(player)
 
 	local ls = setupLeaderstats(player)
 
+	-- Assigner le plot une seule fois pour toute la session
+	local plotIndex, plotPos = assignPlot(player)
+	if not plotIndex then warn("No plot for " .. player.Name) return end
+	data.plotIndex = plotIndex
+	data.plotPos   = plotPos
+	buildAndSetupPlot(player, data)
+
 	local function onCharacter()
-		local plotIndex, plotPos = assignPlot(player)
-		if not plotIndex then warn("No plot for " .. player.Name) return end
-		data.plotIndex = plotIndex
-		data.plotPos   = plotPos
-
-		-- Nettoyer un éventuel ancien plot
-		if plotModels[player.UserId] then
-			plotModels[player.UserId]:Destroy()
+		-- Téléporter le joueur sur son plot au spawn
+		local character = player.Character
+		if character then
+			local hrp = character:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				hrp.CFrame = CFrame.new(data.plotPos + Vector3.new(0, 5, Config.BUTTON_AREA_Z + 10))
+			end
 		end
-
-		buildAndSetupPlot(player, data)
 
 		RemoteEvents.UpdateStats:FireClient(player, {
 			money = data.money, subscribers = data.subscribers,
