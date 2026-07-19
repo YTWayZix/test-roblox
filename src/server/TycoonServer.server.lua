@@ -1,58 +1,48 @@
--- Script serveur principal du tycoon Youtubeur
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local DataStoreService = game:GetService("DataStoreService")
+-- Serveur principal — YouTuber Tycoon (mécanique dropper/convoyeur/collecteur)
+local Players            = game:GetService("Players")
+local RunService         = game:GetService("RunService")
+local DataStoreService   = game:GetService("DataStoreService")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Config = require(ReplicatedStorage:WaitForChild("Config"))
+local Config       = require(ReplicatedStorage:WaitForChild("Config"))
 local RemoteEvents = require(ReplicatedStorage:WaitForChild("RemoteEvents"))
 
--- DataStore désactivé en Studio non publié, on utilise un mock
-local PlayerDataStore = nil
+-- DataStore avec fallback Studio
+local PlayerDataStore
 local ok, ds = pcall(function()
-	return DataStoreService:GetDataStore("YouTuberTycoon_v1")
+	return DataStoreService:GetDataStore("YouTuberTycoon_v2")
 end)
 if ok then PlayerDataStore = ds end
 
--- Données en mémoire par joueur
+-- Données runtime par joueur
 local playerData = {}
-
--- Plots (terrains) disponibles dans le monde
-local PLOT_POSITIONS = {
-	Vector3.new(0,   0, 0),
-	Vector3.new(80,  0, 0),
-	Vector3.new(0,   0, 80),
-	Vector3.new(80,  0, 80),
-	Vector3.new(-80, 0, 0),
-	Vector3.new(0,   0, -80),
-}
-local usedPlots = {}
+-- Référence aux modèles de plot par userId
+local plotModels = {}
 
 -- ============================================================
--- DataStore helpers
+-- DataStore
 -- ============================================================
 local function defaultData()
 	return {
 		money       = 0,
 		subscribers = 0,
-		buildings   = {},   -- set of building ids
+		rebirths    = 0,
+		multiplier  = 1,
+		buildings   = {},
+		milestones  = {},
 		plotIndex   = nil,
-		milestones  = {},   -- set of milestone subscriber thresholds
 	}
 end
 
 local function loadData(player)
 	if not PlayerDataStore then return defaultData() end
-	local success, data = pcall(function()
-		return PlayerDataStore:GetAsync(tostring(player.UserId))
-	end)
-	if success and data then
-		-- merge missing keys
+	local s, d = pcall(function() return PlayerDataStore:GetAsync(tostring(player.UserId)) end)
+	if s and d then
 		local def = defaultData()
 		for k, v in pairs(def) do
-			if data[k] == nil then data[k] = v end
+			if d[k] == nil then d[k] = v end
 		end
-		return data
+		return d
 	end
 	return defaultData()
 end
@@ -60,16 +50,21 @@ end
 local function saveData(player)
 	local data = playerData[player.UserId]
 	if not data or not PlayerDataStore then return end
-	pcall(function()
-		PlayerDataStore:SetAsync(tostring(player.UserId), data)
-	end)
+	-- plotPos n'est pas sérialisable, on le retire
+	local toSave = {}
+	for k, v in pairs(data) do
+		if k ~= "plotPos" then toSave[k] = v end
+	end
+	pcall(function() PlayerDataStore:SetAsync(tostring(player.UserId), toSave) end)
 end
 
 -- ============================================================
--- Plot management
+-- Plots
 -- ============================================================
+local usedPlots = {}
+
 local function assignPlot(player)
-	for i, pos in ipairs(PLOT_POSITIONS) do
+	for i, pos in ipairs(Config.PLOT_POSITIONS) do
 		if not usedPlots[i] then
 			usedPlots[i] = player.UserId
 			return i, pos
@@ -80,300 +75,456 @@ end
 
 local function freePlot(userId)
 	for i, uid in pairs(usedPlots) do
-		if uid == userId then
-			usedPlots[i] = nil
-			return
-		end
+		if uid == userId then usedPlots[i] = nil return end
 	end
 end
 
 -- ============================================================
--- World building
+-- Construction du plot
 -- ============================================================
-local function buildBase(plotPos)
+local function makeLabel(parent, text, size, pos, color, font)
+	local bb = Instance.new("BillboardGui")
+	bb.Size = size or UDim2.new(0, 120, 0, 30)
+	bb.StudsOffset = pos or Vector3.new(0, 2, 0)
+	bb.AlwaysOnTop = false
+	bb.Parent = parent
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, 0, 1, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = text
+	lbl.TextColor3 = color or Color3.new(1, 1, 1)
+	lbl.TextStrokeTransparency = 0
+	lbl.Font = font or Enum.Font.GothamBold
+	lbl.TextScaled = true
+	lbl.Parent = bb
+	return lbl
+end
+
+local function buildPlot(player, data)
+	local plotPos = data.plotPos
+	local model   = Instance.new("Model")
+	model.Name    = "Plot_" .. player.UserId
+	model.Parent  = workspace
+
+	-- Sol du plot
 	local base = Instance.new("Part")
-	base.Size = Vector3.new(60, 1, 60)
-	base.Position = plotPos + Vector3.new(0, -0.5, 0)
+	base.Name     = "Base"
+	base.Size     = Config.PLOT_SIZE
+	base.CFrame   = CFrame.new(plotPos + Vector3.new(0, -0.5, 0))
 	base.Anchored = true
 	base.Material = Enum.Material.SmoothPlastic
-	base.Color = Color3.fromRGB(50, 50, 60)
-	base.Name = "PlotBase"
-	base.Parent = workspace
-	return base
-end
+	base.Color    = Color3.fromRGB(40, 40, 55)
+	base.Parent   = model
 
-local function spawnBuildingModel(buildingCfg, plotPos, index)
-	local model = Instance.new("Model")
-	model.Name = buildingCfg.id
+	-- Panneau nom du joueur
+	local namePart = Instance.new("Part")
+	namePart.Size     = Vector3.new(14, 4, 0.5)
+	namePart.CFrame   = CFrame.new(plotPos + Vector3.new(0, 2, -Config.PLOT_SIZE.Z / 2 + 1))
+	namePart.Anchored = true
+	namePart.Material = Enum.Material.SmoothPlastic
+	namePart.Color    = Color3.fromRGB(20, 20, 30)
+	namePart.Parent   = model
 
-	local part = Instance.new("Part")
-	part.Size = buildingCfg.size
-	local col = index - 1
-	local row = math.floor(col / 3)
-	col = col % 3
-	part.Position = plotPos + Vector3.new(-20 + col * 22, buildingCfg.size.Y / 2, -20 + row * 22)
-	part.Anchored = true
-	part.Material = Enum.Material.SmoothPlastic
-	part.Color = buildingCfg.color
-	part.Name = "Main"
-	part.Parent = model
+	local sg = Instance.new("SurfaceGui")
+	sg.Face = Enum.NormalId.Front
+	sg.PixelsPerStud = 40
+	sg.Parent = namePart
+	local nl = Instance.new("TextLabel")
+	nl.Size = UDim2.new(1, 0, 1, 0)
+	nl.BackgroundTransparency = 1
+	nl.Text = "🎬 " .. player.Name
+	nl.TextColor3 = Color3.fromRGB(255, 60, 60)
+	nl.Font = Enum.Font.GothamBold
+	nl.TextScaled = true
+	nl.Parent = sg
 
-	-- Label
-	local billboard = Instance.new("BillboardGui")
-	billboard.Size = UDim2.new(0, 160, 0, 40)
-	billboard.StudsOffset = Vector3.new(0, buildingCfg.size.Y / 2 + 1, 0)
-	billboard.AlwaysOnTop = false
-	billboard.Parent = part
+	-- Convoyeur (plan incliné vers le collecteur)
+	local conveyorLength = math.abs(Config.CONVEYOR_END_Z - Config.CONVEYOR_START_Z)
+	local conveyor = Instance.new("Part")
+	conveyor.Name     = "Conveyor"
+	conveyor.Size     = Vector3.new(8, 0.4, conveyorLength)
+	conveyor.CFrame   = CFrame.new(plotPos + Vector3.new(0, 0.2,
+		(Config.CONVEYOR_START_Z + Config.CONVEYOR_END_Z) / 2))
+	conveyor.Anchored = true
+	conveyor.Material = Enum.Material.SmoothPlastic
+	conveyor.Color    = Color3.fromRGB(60, 60, 70)
+	conveyor.Parent   = model
 
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1, 0, 1, 0)
-	label.BackgroundTransparency = 1
-	label.Text = buildingCfg.name
-	label.TextColor3 = Color3.new(1, 1, 1)
-	label.TextStrokeTransparency = 0
-	label.Font = Enum.Font.GothamBold
-	label.TextScaled = true
-	label.Parent = billboard
+	-- Flèches décoratives sur le convoyeur
+	for i = 1, 3 do
+		local arrow = Instance.new("Part")
+		arrow.Size     = Vector3.new(4, 0.05, 2)
+		arrow.CFrame   = CFrame.new(plotPos + Vector3.new(0, 0.43,
+			Config.CONVEYOR_START_Z + i * (conveyorLength / 4)))
+		arrow.Anchored = true
+		arrow.Material = Enum.Material.Neon
+		arrow.Color    = Color3.fromRGB(255, 60, 60)
+		arrow.CanCollide = false
+		arrow.Parent   = model
+	end
 
-	model.Parent = workspace
-	return model
-end
+	-- Collecteur
+	local collector = Instance.new("Part")
+	collector.Name     = "Collector"
+	collector.Size     = Vector3.new(10, 2, 4)
+	collector.CFrame   = CFrame.new(plotPos + Vector3.new(0, 1, Config.CONVEYOR_END_Z + 2))
+	collector.Anchored = true
+	collector.Material = Enum.Material.Neon
+	collector.Color    = Color3.fromRGB(255, 215, 0)
+	collector.CanCollide = true
+	collector.Parent   = model
+	makeLabel(collector, "💰 Collecteur", UDim2.new(0, 160, 0, 35), Vector3.new(0, 2, 0))
 
-local handlePurchase  -- forward declaration
-
-local function buildPurchaseButton(buildingCfg, plotPos, index, player)
-	local col = index - 1
-	local row = math.floor(col / 3)
-	col = col % 3
-
-	local btnPart = Instance.new("Part")
-	btnPart.Size = Vector3.new(4, 0.5, 4)
-	btnPart.Position = plotPos + Vector3.new(-20 + col * 22, 0.25, -20 + row * 22)
-	btnPart.Anchored = true
-	btnPart.Material = Enum.Material.Neon
-	btnPart.Color = Color3.fromRGB(255, 60, 60)
-	btnPart.Name = "BuyButton_" .. buildingCfg.id
-	btnPart.Parent = workspace
-
-	local billboard = Instance.new("BillboardGui")
-	billboard.Size = UDim2.new(0, 200, 0, 60)
-	billboard.StudsOffset = Vector3.new(0, 2, 0)
-	billboard.AlwaysOnTop = false
-	billboard.Parent = btnPart
-
-	local frame = Instance.new("Frame")
-	frame.Size = UDim2.new(1, 0, 1, 0)
-	frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-	frame.BackgroundTransparency = 0.3
-	frame.Parent = billboard
-
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
-	nameLabel.BackgroundTransparency = 1
-	nameLabel.Text = buildingCfg.name
-	nameLabel.TextColor3 = Color3.new(1, 1, 1)
-	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.TextScaled = true
-	nameLabel.Parent = frame
-
-	local priceLabel = Instance.new("TextLabel")
-	priceLabel.Size = UDim2.new(1, 0, 0.5, 0)
-	priceLabel.Position = UDim2.new(0, 0, 0.5, 0)
-	priceLabel.BackgroundTransparency = 1
-	priceLabel.Text = "💰 " .. tostring(buildingCfg.price)
-	priceLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
-	priceLabel.Font = Enum.Font.Gotham
-	priceLabel.TextScaled = true
-	priceLabel.Parent = frame
-
-	-- Détection du click via ProximityPrompt
-	local prompt = Instance.new("ProximityPrompt")
-	prompt.ActionText = "Acheter"
-	prompt.ObjectText = buildingCfg.name .. " · 💰" .. tostring(buildingCfg.price)
-	prompt.MaxActivationDistance = 10
-	prompt.Parent = btnPart
-
-	prompt.Triggered:Connect(function(triggeringPlayer)
-		if triggeringPlayer == player then
-			handlePurchase(player, buildingCfg.id)
+	-- Détection de collection
+	collector.Touched:Connect(function(hit)
+		if hit.Name == "Video" and hit:GetAttribute("OwnerId") == player.UserId then
+			local val = hit:GetAttribute("Value") or 1
+			hit:Destroy()
+			local d = playerData[player.UserId]
+			if d then
+				d.money = d.money + (val * d.multiplier)
+				RemoteEvents.UpdateStats:FireClient(player, {
+					money = d.money, subscribers = d.subscribers,
+					rebirths = d.rebirths, multiplier = d.multiplier,
+					buildings = d.buildings,
+				})
+			end
 		end
 	end)
 
-	return btnPart
+	-- Convoyeur : déplace les "vidéos" avec AssemblyLinearVelocity
+	RunService.Heartbeat:Connect(function()
+		for _, obj in ipairs(model:GetChildren()) do
+			if obj.Name == "Video" and obj:GetAttribute("OwnerId") == player.UserId then
+				obj.AssemblyLinearVelocity = Vector3.new(0, 0, Config.CONVEYOR_SPEED)
+			end
+		end
+	end)
+
+	plotModels[player.UserId] = model
+	return model
+end
+
+-- ============================================================
+-- Boutons d'achat (walk-in touch)
+-- ============================================================
+local function createBuyButton(cfg, index, player, data, plotModel)
+	local plotPos = data.plotPos
+	local col     = (index - 1) % 3
+	local row     = math.floor((index - 1) / 3)
+
+	local btn = Instance.new("Part")
+	btn.Name      = "BuyBtn_" .. cfg.id
+	btn.Size      = Vector3.new(7, 0.4, 5)
+	btn.CFrame    = CFrame.new(plotPos + Vector3.new(
+		-10 + col * 11,
+		0.2,
+		Config.BUTTON_AREA_Z - row * 7
+	))
+	btn.Anchored  = true
+	btn.Material  = Enum.Material.Neon
+	btn.Color     = Color3.fromRGB(255, 60, 60)
+	btn.CanCollide = true
+	btn.Parent    = plotModel
+
+	-- Label prix
+	local lbl = makeLabel(btn,
+		cfg.name .. "\n💰 " .. tostring(cfg.price),
+		UDim2.new(0, 180, 0, 50),
+		Vector3.new(0, 2.5, 0)
+	)
+	lbl.TextColor3 = Color3.fromRGB(255, 215, 0)
+
+	-- Touch pour acheter
+	local debounce = false
+	btn.Touched:Connect(function(hit)
+		if debounce then return end
+		local char = hit.Parent
+		local p    = Players:GetPlayerFromCharacter(char)
+		if p ~= player then return end
+		debounce = true
+		task.delay(0.5, function() debounce = false end)
+
+		local d = playerData[player.UserId]
+		if not d then return end
+		if d.buildings[cfg.id] then return end
+		if index > 1 and not d.buildings[Config.BUILDINGS[index - 1].id] then return end
+		if d.money < cfg.price then return end
+
+		d.money = d.money - cfg.price
+		d.buildings[cfg.id] = true
+		d.subscribers = d.subscribers + cfg.subscriberBonus
+
+		btn:Destroy()
+		spawnDropper(cfg, index, player, d, plotModel)
+
+		RemoteEvents.UpdateStats:FireClient(player, {
+			money = d.money, subscribers = d.subscribers,
+			rebirths = d.rebirths, multiplier = d.multiplier,
+			buildings = d.buildings,
+		})
+		RemoteEvents.BuildingPurchased:FireClient(player, cfg)
+
+		-- Milestones
+		for _, ms in ipairs(Config.MILESTONES) do
+			if d.subscribers >= ms.subscribers and not d.milestones[ms.subscribers] then
+				d.milestones[ms.subscribers] = true
+				d.money = d.money + ms.reward
+				RemoteEvents.MilestoneReached:FireClient(player, ms)
+				RemoteEvents.UpdateStats:FireClient(player, {
+					money = d.money, subscribers = d.subscribers,
+					rebirths = d.rebirths, multiplier = d.multiplier,
+					buildings = d.buildings,
+				})
+			end
+		end
+	end)
+
+	return btn
+end
+
+-- ============================================================
+-- Dropper : spawn des "vidéos" à intervalle régulier
+-- ============================================================
+function spawnDropper(cfg, index, player, data, plotModel)
+	local plotPos = data.plotPos
+	local col     = (index - 1) % 3
+	local row     = math.floor((index - 1) / 3)
+
+	-- Structure du dropper
+	local platform = Instance.new("Part")
+	platform.Name     = cfg.id
+	platform.Size     = Vector3.new(6, 1, 5)
+	platform.CFrame   = CFrame.new(plotPos + Vector3.new(
+		-10 + col * 11,
+		Config.DROPPER_BASE_Y,
+		Config.CONVEYOR_START_Z - 5 - row * 6
+	))
+	platform.Anchored = true
+	platform.Material = Enum.Material.SmoothPlastic
+	platform.Color    = cfg.color
+	platform.Parent   = plotModel
+
+	makeLabel(platform, cfg.name, UDim2.new(0, 150, 0, 30), Vector3.new(0, 2, 0), cfg.color)
+
+	-- Boucle de drop
+	task.spawn(function()
+		while platform.Parent ~= nil do
+			task.wait(cfg.dropInterval)
+			if platform.Parent == nil then break end
+			local d = playerData[player.UserId]
+			if not d then break end
+
+			local video = Instance.new("Part")
+			video.Name    = "Video"
+			video.Size    = Vector3.new(1.5, 0.8, 2)
+			video.Color   = cfg.color
+			video.Material = Enum.Material.SmoothPlastic
+			video.CFrame  = platform.CFrame * CFrame.new(0, -1.5, 0)
+			video:SetAttribute("OwnerId", player.UserId)
+			video:SetAttribute("Value", cfg.dropValue)
+			video.Parent  = plotModel
+
+			-- Nettoyage automatique si non collecté
+			task.delay(Config.DROP_LIFETIME, function()
+				if video.Parent then video:Destroy() end
+			end)
+		end
+	end)
+end
+
+-- ============================================================
+-- Bouton Rebirth (walk-in)
+-- ============================================================
+local function createRebirthButton(player, data, plotModel)
+	local plotPos = data.plotPos
+
+	local btn = Instance.new("Part")
+	btn.Name      = "RebirthBtn"
+	btn.Size      = Vector3.new(8, 0.4, 5)
+	btn.CFrame    = CFrame.new(plotPos + Vector3.new(15, 0.2, Config.BUTTON_AREA_Z))
+	btn.Anchored  = true
+	btn.Material  = Enum.Material.Neon
+	btn.Color     = Color3.fromRGB(150, 0, 255)
+	btn.Parent    = plotModel
+
+	local lbl = makeLabel(btn, "🔄 REBIRTH\n💰 1 000 000", UDim2.new(0, 200, 0, 50), Vector3.new(0, 2.5, 0))
+	lbl.TextColor3 = Color3.fromRGB(220, 180, 255)
+
+	local debounce = false
+	btn.Touched:Connect(function(hit)
+		if debounce then return end
+		local p = Players:GetPlayerFromCharacter(hit.Parent)
+		if p ~= player then return end
+		debounce = true
+		task.delay(1, function() debounce = false end)
+
+		local d = playerData[player.UserId]
+		if not d then return end
+
+		local rebirthCfg = Config.REBIRTHS[d.rebirths + 1]
+		if not rebirthCfg then return end
+		if d.money < rebirthCfg.cost then return end
+
+		-- Reset
+		d.money       = 0
+		d.buildings   = {}
+		d.subscribers = 0
+		d.milestones  = {}
+		d.rebirths    = d.rebirths + 1
+		d.multiplier  = rebirthCfg.multiplier
+
+		-- Détruire et reconstruire le plot
+		if plotModels[player.UserId] then
+			plotModels[player.UserId]:Destroy()
+		end
+		buildAndSetupPlot(player, d)
+
+		RemoteEvents.UpdateStats:FireClient(player, {
+			money = d.money, subscribers = d.subscribers,
+			rebirths = d.rebirths, multiplier = d.multiplier,
+			buildings = d.buildings,
+		})
+		RemoteEvents.RebirthDone:FireClient(player, rebirthCfg)
+	end)
+end
+
+-- ============================================================
+-- Setup complet d'un plot
+-- ============================================================
+function buildAndSetupPlot(player, data)
+	local plotModel = buildPlot(player, data)
+
+	-- Boutons d'achat pour les bâtiments non possédés
+	-- Droppers pour les bâtiments déjà possédés
+	for i, cfg in ipairs(Config.BUILDINGS) do
+		if data.buildings[cfg.id] then
+			spawnDropper(cfg, i, player, data, plotModel)
+		else
+			createBuyButton(cfg, i, player, data, plotModel)
+		end
+	end
+
+	createRebirthButton(player, data, plotModel)
+end
+
+-- ============================================================
+-- Leaderboard (OrderedDataStore)
+-- ============================================================
+local LeaderboardStore
+local s2, ds2 = pcall(function()
+	return DataStoreService:GetOrderedDataStore("Leaderboard_Subscribers")
+end)
+if s2 then LeaderboardStore = ds2 end
+
+local function updateLeaderboard(player, subscribers)
+	if not LeaderboardStore then return end
+	pcall(function()
+		LeaderboardStore:SetAsync(tostring(player.UserId), subscribers)
+	end)
+end
+
+-- Leaderstats Roblox (affichés dans le tableau de classement natif)
+local function setupLeaderstats(player)
+	local ls = Instance.new("Folder")
+	ls.Name = "leaderstats"
+	ls.Parent = player
+
+	local abonnes = Instance.new("IntValue")
+	abonnes.Name = "Abonnés"
+	abonnes.Value = 0
+	abonnes.Parent = ls
+
+	local revenus = Instance.new("IntValue")
+	revenus.Name = "Revenus"
+	revenus.Value = 0
+	revenus.Parent = ls
+
+	local rb = Instance.new("IntValue")
+	rb.Name = "Rebirths"
+	rb.Value = 0
+	rb.Parent = ls
+
+	return ls
 end
 
 -- ============================================================
 -- Player lifecycle
 -- ============================================================
-local function setupPlot(player, data)
-	local plotIndex, plotPos = assignPlot(player)
-	if not plotIndex then
-		warn("No available plot for " .. player.Name)
-		return
-	end
-	data.plotIndex = plotIndex
-	data.plotPos   = plotPos  -- runtime only, not saved
-
-	buildBase(plotPos)
-
-	-- Reconstruire les bâtiments déjà achetés
-	for i, cfg in ipairs(Config.BUILDINGS) do
-		if data.buildings[cfg.id] then
-			spawnBuildingModel(cfg, plotPos, i)
-		else
-			buildPurchaseButton(cfg, plotPos, i, player)
-		end
-	end
-end
-
 local function onPlayerAdded(player)
 	local data = loadData(player)
 	playerData[player.UserId] = data
 
-	player.CharacterAdded:Connect(function()
-		setupPlot(player, data)
-	end)
+	local ls = setupLeaderstats(player)
 
-	if player.Character then
-		setupPlot(player, data)
+	local function onCharacter()
+		local plotIndex, plotPos = assignPlot(player)
+		if not plotIndex then warn("No plot for " .. player.Name) return end
+		data.plotIndex = plotIndex
+		data.plotPos   = plotPos
+
+		-- Nettoyer un éventuel ancien plot
+		if plotModels[player.UserId] then
+			plotModels[player.UserId]:Destroy()
+		end
+
+		buildAndSetupPlot(player, data)
+
+		RemoteEvents.UpdateStats:FireClient(player, {
+			money = data.money, subscribers = data.subscribers,
+			rebirths = data.rebirths, multiplier = data.multiplier,
+			buildings = data.buildings,
+		})
 	end
 
-	RemoteEvents.UpdateStats:FireClient(player, {
-		money       = data.money,
-		subscribers = data.subscribers,
-		buildings   = data.buildings,
-	})
+	player.CharacterAdded:Connect(onCharacter)
+	if player.Character then onCharacter() end
+
+	-- Sync leaderstats toutes les 5 secondes
+	task.spawn(function()
+		while player.Parent do
+			local d = playerData[player.UserId]
+			if d then
+				if ls:FindFirstChild("Abonnés") then ls.Abonnés.Value = d.subscribers end
+				if ls:FindFirstChild("Revenus") then ls.Revenus.Value  = d.money end
+				if ls:FindFirstChild("Rebirths") then ls.Rebirths.Value = d.rebirths end
+				updateLeaderboard(player, d.subscribers)
+			end
+			task.wait(5)
+		end
+	end)
 end
 
 local function onPlayerRemoving(player)
 	saveData(player)
 	freePlot(player.UserId)
+	if plotModels[player.UserId] then
+		plotModels[player.UserId]:Destroy()
+		plotModels[player.UserId] = nil
+	end
 	playerData[player.UserId] = nil
 end
 
--- ============================================================
--- Purchase logic
--- ============================================================
-handlePurchase = function(player, buildingId)
-	local data = playerData[player.UserId]
-	if not data then return end
-
-	local cfg, index
-	for i, c in ipairs(Config.BUILDINGS) do
-		if c.id == buildingId then
-			cfg = c
-			index = i
-			break
-		end
-	end
-	if not cfg then return end
-	if data.buildings[buildingId] then return end
-
-	if index > 1 then
-		local prevCfg = Config.BUILDINGS[index - 1]
-		if not data.buildings[prevCfg.id] then return end
-	end
-
-	if data.money < cfg.price then return end
-
-	data.money = data.money - cfg.price
-	data.buildings[buildingId] = true
-	data.subscribers = data.subscribers + cfg.subscriberBonus
-
-	local plotPos = data.plotPos
-	if plotPos then
-		for _, obj in ipairs(workspace:GetChildren()) do
-			if obj.Name == "BuyButton_" .. buildingId then
-				obj:Destroy()
-			end
-		end
-		spawnBuildingModel(cfg, plotPos, index)
-	end
-
-	RemoteEvents.UpdateStats:FireClient(player, {
-		money       = data.money,
-		subscribers = data.subscribers,
-		buildings   = data.buildings,
-	})
-
-	RemoteEvents.BuildingPurchased:FireClient(player, cfg)
-
-	for _, milestone in ipairs(Config.MILESTONES) do
-		if data.subscribers >= milestone.subscribers and not data.milestones[milestone.subscribers] then
-			data.milestones[milestone.subscribers] = true
-			data.money = data.money + milestone.reward
-			RemoteEvents.MilestoneReached:FireClient(player, milestone)
-			RemoteEvents.UpdateStats:FireClient(player, {
-				money       = data.money,
-				subscribers = data.subscribers,
-				buildings   = data.buildings,
-			})
-		end
-	end
-end
-
--- Le RemoteEvent client→serveur reste en backup (ex: touch button sans ProximityPrompt)
-RemoteEvents.PurchaseBuilding.OnServerEvent:Connect(handlePurchase)
-
--- ============================================================
--- GetPlayerData RemoteFunction
--- ============================================================
-RemoteEvents.GetPlayerData.OnServerInvoke = function(player)
-	local data = playerData[player.UserId]
-	if not data then return {} end
-	return {
-		money       = data.money,
-		subscribers = data.subscribers,
-		buildings   = data.buildings,
-	}
-end
-
--- ============================================================
--- Tick passif : génère des revenus automatiquement
--- ============================================================
-local tickTimer = 0
-RunService.Heartbeat:Connect(function(dt)
-	tickTimer = tickTimer + dt
-	if tickTimer < Config.TICK_INTERVAL then return end
-	tickTimer = 0
-
-	for _, player in ipairs(Players:GetPlayers()) do
-		local data = playerData[player.UserId]
-		if data then
-			local income = 0
-			for _, cfg in ipairs(Config.BUILDINGS) do
-				if data.buildings[cfg.id] then
-					income = income + cfg.incomePerTick
-				end
-			end
-			if income > 0 then
-				data.money = data.money + income
-				RemoteEvents.UpdateStats:FireClient(player, {
-					money       = data.money,
-					subscribers = data.subscribers,
-					buildings   = data.buildings,
-				})
-			end
-		end
-	end
-end)
-
--- ============================================================
--- Save périodique (toutes les 60 secondes)
--- ============================================================
-local saveTimer = 0
-RunService.Heartbeat:Connect(function(dt)
-	saveTimer = saveTimer + dt
-	if saveTimer < 60 then return end
-	saveTimer = 0
-	for _, player in ipairs(Players:GetPlayers()) do
-		saveData(player)
-	end
-end)
-
 Players.PlayerAdded:Connect(onPlayerAdded)
 Players.PlayerRemoving:Connect(onPlayerRemoving)
+for _, p in ipairs(Players:GetPlayers()) do onPlayerAdded(p) end
 
-for _, player in ipairs(Players:GetPlayers()) do
-	onPlayerAdded(player)
+-- ============================================================
+-- GetPlayerData
+-- ============================================================
+RemoteEvents.GetPlayerData.OnServerInvoke = function(player)
+	local d = playerData[player.UserId]
+	if not d then return {} end
+	return { money = d.money, subscribers = d.subscribers,
+		rebirths = d.rebirths, multiplier = d.multiplier, buildings = d.buildings }
 end
+
+-- ============================================================
+-- Save automatique toutes les 60s
+-- ============================================================
+task.spawn(function()
+	while true do
+		task.wait(60)
+		for _, p in ipairs(Players:GetPlayers()) do saveData(p) end
+	end
+end)

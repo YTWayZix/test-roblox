@@ -1,7 +1,4 @@
--- Déclaration centralisée des RemoteEvents et RemoteFunctions
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
-local RemoteEvents = {}
 
 local function getOrCreate(className, name)
 	local existing = ReplicatedStorage:FindFirstChild(name)
@@ -12,19 +9,10 @@ local function getOrCreate(className, name)
 	return obj
 end
 
--- Serveur → Client : mise à jour de l'argent/abonnés
-RemoteEvents.UpdateStats       = getOrCreate("RemoteEvent", "UpdateStats")
-
--- Client → Serveur : acheter un bâtiment
-RemoteEvents.PurchaseBuilding  = getOrCreate("RemoteEvent", "PurchaseBuilding")
-
--- Serveur → Client : un bâtiment a été construit
-RemoteEvents.BuildingPurchased = getOrCreate("RemoteEvent", "BuildingPurchased")
-
--- Serveur → Client : milestone atteint
-RemoteEvents.MilestoneReached  = getOrCreate("RemoteEvent", "MilestoneReached")
-
--- Client → Serveur (RF) : demander les données initiales
-RemoteEvents.GetPlayerData     = getOrCreate("RemoteFunction", "GetPlayerData")
-
-return RemoteEvents
+local RE = {}
+RE.UpdateStats        = getOrCreate("RemoteEvent",    "UpdateStats")
+RE.BuildingPurchased  = getOrCreate("RemoteEvent",    "BuildingPurchased")
+RE.MilestoneReached   = getOrCreate("RemoteEvent",    "MilestoneReached")
+RE.RebirthDone        = getOrCreate("RemoteEvent",    "RebirthDone")
+RE.GetPlayerData      = getOrCreate("RemoteFunction", "GetPlayerData")
+return RE
