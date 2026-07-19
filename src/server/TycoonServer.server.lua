@@ -139,6 +139,8 @@ local function spawnBuildingModel(buildingCfg, plotPos, index)
 	return model
 end
 
+local handlePurchase  -- forward declaration
+
 local function buildPurchaseButton(buildingCfg, plotPos, index, player)
 	local col = index - 1
 	local row = math.floor(col / 3)
@@ -193,7 +195,7 @@ local function buildPurchaseButton(buildingCfg, plotPos, index, player)
 
 	prompt.Triggered:Connect(function(triggeringPlayer)
 		if triggeringPlayer == player then
-			RemoteEvents.PurchaseBuilding:FireServer(buildingCfg.id)
+			handlePurchase(player, buildingCfg.id)
 		end
 	end)
 
@@ -252,11 +254,10 @@ end
 -- ============================================================
 -- Purchase logic
 -- ============================================================
-RemoteEvents.PurchaseBuilding.OnServerEvent:Connect(function(player, buildingId)
+handlePurchase = function(player, buildingId)
 	local data = playerData[player.UserId]
 	if not data then return end
 
-	-- Trouver la config
 	local cfg, index
 	for i, c in ipairs(Config.BUILDINGS) do
 		if c.id == buildingId then
@@ -266,14 +267,11 @@ RemoteEvents.PurchaseBuilding.OnServerEvent:Connect(function(player, buildingId)
 		end
 	end
 	if not cfg then return end
-	if data.buildings[buildingId] then return end -- déjà acheté
+	if data.buildings[buildingId] then return end
 
-	-- Vérifier le prérequis (bâtiment précédent acheté sauf le 1er)
 	if index > 1 then
 		local prevCfg = Config.BUILDINGS[index - 1]
-		if not data.buildings[prevCfg.id] then
-			return
-		end
+		if not data.buildings[prevCfg.id] then return end
 	end
 
 	if data.money < cfg.price then return end
@@ -282,10 +280,8 @@ RemoteEvents.PurchaseBuilding.OnServerEvent:Connect(function(player, buildingId)
 	data.buildings[buildingId] = true
 	data.subscribers = data.subscribers + cfg.subscriberBonus
 
-	-- Remplacer le bouton par le modèle 3D
 	local plotPos = data.plotPos
 	if plotPos then
-		-- Supprimer le bouton
 		for _, obj in ipairs(workspace:GetChildren()) do
 			if obj.Name == "BuyButton_" .. buildingId then
 				obj:Destroy()
@@ -302,7 +298,6 @@ RemoteEvents.PurchaseBuilding.OnServerEvent:Connect(function(player, buildingId)
 
 	RemoteEvents.BuildingPurchased:FireClient(player, cfg)
 
-	-- Vérifier les milestones
 	for _, milestone in ipairs(Config.MILESTONES) do
 		if data.subscribers >= milestone.subscribers and not data.milestones[milestone.subscribers] then
 			data.milestones[milestone.subscribers] = true
@@ -315,7 +310,10 @@ RemoteEvents.PurchaseBuilding.OnServerEvent:Connect(function(player, buildingId)
 			})
 		end
 	end
-end)
+end
+
+-- Le RemoteEvent client→serveur reste en backup (ex: touch button sans ProximityPrompt)
+RemoteEvents.PurchaseBuilding.OnServerEvent:Connect(handlePurchase)
 
 -- ============================================================
 -- GetPlayerData RemoteFunction
