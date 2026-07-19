@@ -431,7 +431,7 @@ local function setupLeaderstats(player)
 	ls.Parent = player
 
 	local abonnes = Instance.new("IntValue")
-	abonnes.Name = "Abonnés"
+	abonnes.Name = "Abonnes"
 	abonnes.Value = 0
 	abonnes.Parent = ls
 
@@ -489,8 +489,8 @@ local function onPlayerAdded(player)
 		while player.Parent do
 			local d = playerData[player.UserId]
 			if d then
-				if ls:FindFirstChild("Abonnés") then ls.Abonnés.Value = d.subscribers end
-				if ls:FindFirstChild("Revenus") then ls.Revenus.Value  = d.money end
+				if ls:FindFirstChild("Abonnes") then ls.Abonnes.Value = d.subscribers end
+				if ls:FindFirstChild("Revenus")  then ls.Revenus.Value  = d.money end
 				if ls:FindFirstChild("Rebirths") then ls.Rebirths.Value = d.rebirths end
 				updateLeaderboard(player, d.subscribers)
 			end
