@@ -1,0 +1,28 @@
+{
+  "name": "YouTuberTycoon",
+  "tree": {
+    "$className": "DataModel",
+    "Workspace": {
+      "$className": "Workspace",
+      "$properties": {
+        "Gravity": 196.2
+      }
+    },
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "$path": "src/server"
+    },
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "$path": "src/shared"
+    },
+    "StarterGui": {
+      "$className": "StarterGui",
+      "$path": "src/client/gui"
+    },
+    "StarterPlayerScripts": {
+      "$className": "StarterPlayerScripts",
+      "$path": "src/client/scripts"
+    }
+  }
+}
