@@ -7,7 +7,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage:WaitForChild("Config"))
 local RemoteEvents = require(ReplicatedStorage:WaitForChild("RemoteEvents"))
 
-local PlayerDataStore = DataStoreService:GetDataStore("YouTuberTycoon_v1")
+-- DataStore désactivé en Studio non publié, on utilise un mock
+local PlayerDataStore = nil
+local ok, ds = pcall(function()
+	return DataStoreService:GetDataStore("YouTuberTycoon_v1")
+end)
+if ok then PlayerDataStore = ds end
 
 -- Données en mémoire par joueur
 local playerData = {}
@@ -37,6 +42,7 @@ local function defaultData()
 end
 
 local function loadData(player)
+	if not PlayerDataStore then return defaultData() end
 	local success, data = pcall(function()
 		return PlayerDataStore:GetAsync(tostring(player.UserId))
 	end)
@@ -53,7 +59,7 @@ end
 
 local function saveData(player)
 	local data = playerData[player.UserId]
-	if not data then return end
+	if not data or not PlayerDataStore then return end
 	pcall(function()
 		PlayerDataStore:SetAsync(tostring(player.UserId), data)
 	end)
